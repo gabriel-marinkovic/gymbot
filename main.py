@@ -28,19 +28,47 @@ def load_config() -> Dict[str, Any]:
         exit(-1)
 
 
+_workout = [
+    {
+        "name": "Bench Press",
+        "sets": 3,
+        "reps": 12,
+        "weight": 40.0,
+        "weight_delta": 2.5,
+    },
+    {
+        "name": "Bench Press",
+        "sets": 3,
+        "reps": 12,
+        "weight": 40.0,
+        "weight_delta": 2.5,
+    },
+]
+
+
+def _generate_workout_markup():
+    keyboard = []
+    for exercise in _workout:
+        exercise_label = f"{exercise["name"]}, {exercise["weight"]}kg, {exercise["sets"]}x{exercise["reps"]}"
+        keyboard.append([InlineKeyboardButton(exercise_label, callback_data="bla")])
+        rep_labels = []
+        rep_buttons = []
+        for i in range(exercise["sets"]):
+            rep_label = f"{exercise["reps"]} ({exercise["weight"]}kg)"
+            rep_labels.append(InlineKeyboardButton(rep_label, callback_data=f"rep{i}"))
+            rep_buttons.append(InlineKeyboardButton("Edit", callback_data=f"rep_edit{i}"))
+        keyboard.append(rep_labels)
+        keyboard.append(rep_buttons)
+    print(keyboard)
+    return InlineKeyboardMarkup(keyboard)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         logging.warn("Got update without 'message':", update)
         return
 
-    keyboard = [
-        [
-            InlineKeyboardButton("Option 1", callback_data="1"),
-            InlineKeyboardButton("Option 2", callback_data="2"),
-        ],
-        [InlineKeyboardButton("Option 3", callback_data="3")],
-    ]
-    await update.message.reply_text("Please choose:", reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text("Starting a new workout!", reply_markup=_generate_workout_markup())
 
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
