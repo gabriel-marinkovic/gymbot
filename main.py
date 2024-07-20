@@ -1,17 +1,21 @@
 import os
+import sys
 import tomllib
+from typing import Dict, Any
 
 
-def load_config():
+def load_config() -> Dict[str, Any]:
     try:
         path = os.environ["CONFIG"]
     except KeyError:
-        print("'CONFIG' environment contain the path to the config file")
-    with open(path, "rb") as f:
-        try:
+        print("'CONFIG' environment contain the path to the config file", file=sys.stderr)
+        exit(-1)
+    try:
+        with open(path, "rb") as f:
             return tomllib.load(f)
-        except tomllib.TOMLDecodeError as e:
-            print(f"Failed to parse config from '{path}': {e}")
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        print(f"Failed to parse config from '{path}': {e}", file=sys.stderr)
+        exit(-1)
 
 
 if __name__ == "__main__":
