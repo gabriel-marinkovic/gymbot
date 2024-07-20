@@ -1,7 +1,17 @@
+import logging
 import os
 import sys
 import tomllib
-from typing import Dict, Any
+from typing import Any, Dict
+
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+
+logging.basicConfig(
+    encoding="utf-8",
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
 
 
 def load_config() -> Dict[str, Any]:
@@ -18,5 +28,15 @@ def load_config() -> Dict[str, Any]:
         exit(-1)
 
 
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_chat:
+        logging.warn("Got update without 'effective_chat':", update)
+        return
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="I'm a bot, talk to me!")
+
+
 if __name__ == "__main__":
-    print("Bot token:", load_config()["bot_auth_token"])
+    config = load_config()
+    app = ApplicationBuilder().token(config["bot_auth_token"]).build()
+    app.add_handler(CommandHandler("start", start))
+    app.run_polling(poll_interval=0.5)
