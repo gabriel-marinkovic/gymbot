@@ -2,10 +2,11 @@ import logging
 import os
 import sys
 import tomllib
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, filters, MessageHandler, CallbackQueryHandler
+from telegram.constants import ParseMode
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler
 
 import workouts
 
@@ -49,32 +50,46 @@ _workout = [
 ]
 
 
-def _generate_workout_markup() -> InlineKeyboardMarkup:
+def _generate_workout_markup(workout) -> InlineKeyboardMarkup:
     keyboard = []
-    for (exercise, sets) in workouts.make_workout():
+    for exercise, sets in workout:
         keyboard.append([InlineKeyboardButton(exercise.name, callback_data="bla")])
         row = []
         for i, s in enumerate(sets):
             rep_label = f"{s.reps} ({exercise.weight}kg)"
             row.append(InlineKeyboardButton(rep_label, callback_data=f"rep{i}"))
         keyboard.append(row)
-        keyboard.append([
-            InlineKeyboardButton("⬆️ reps", callback_data="reps_up"),
-            InlineKeyboardButton("⬇️ reps", callback_data="reps_down"),
-            InlineKeyboardButton("⬆️ weight", callback_data="weight_up"),
-            InlineKeyboardButton("⬇️ weight", callback_data="weight_down"),
-        ])
-    from pprint import pprint
-    pprint(keyboard)
+        keyboard.append(
+            [
+                InlineKeyboardButton("⬆️ reps", callback_data="reps_up"),
+                InlineKeyboardButton("⬇️ reps", callback_data="reps_down"),
+                InlineKeyboardButton("⬆️ weight", callback_data="weight_up"),
+                InlineKeyboardButton("⬇️ weight", callback_data="weight_down"),
+            ]
+        )
     return InlineKeyboardMarkup(keyboard)
 
 
+active_workout: Optional[workouts.WorkoutT] = None
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global active_workout
+
     if not update.message:
         logging.warn("Got update without 'message':", update)
         return
 
-    await update.message.reply_text("Starting a new workout!", reply_markup=_generate_workout_markup())
+    message = "Starting a new workout!\n"
+    if active_workout:
+        message += "<code>WARNING: Overwriting previous workout!</code>\n"
+
+    active_workout = workouts.make_workout()
+
+    await update.message.reply_text(
+        message,
+        parse_mode=ParseMode.HTML,
+        reply_markup=_generate_workout_markup(active_workout))
 
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

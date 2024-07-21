@@ -25,6 +25,7 @@ class Exercise:
             for i in range(self.sets)
         ]
 
+WorkoutT = List[Tuple[Exercise, List[WorkoutSet]]]
 
 _default_exercise_templates: List[Exercise] = [
     Exercise(
@@ -156,7 +157,7 @@ _name_to_template: Dict[str, Exercise] = {
 }
 
 
-def make_workout() -> List[Tuple[Exercise, List[WorkoutSet]]]:
+def make_workout() -> WorkoutT:
     names = [
         "Squat",
         "Bench Press",
