@@ -7,6 +7,9 @@ from typing import Any, Dict
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, filters, MessageHandler, CallbackQueryHandler
 
+import workouts
+
+
 logging.basicConfig(
     encoding="utf-8",
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -46,20 +49,23 @@ _workout = [
 ]
 
 
-def _generate_workout_markup():
+def _generate_workout_markup() -> InlineKeyboardMarkup:
     keyboard = []
-    for exercise in _workout:
-        exercise_label = f"{exercise["name"]}, {exercise["weight"]}kg, {exercise["sets"]}x{exercise["reps"]}"
-        keyboard.append([InlineKeyboardButton(exercise_label, callback_data="bla")])
-        rep_labels = []
-        rep_buttons = []
-        for i in range(exercise["sets"]):
-            rep_label = f"{exercise["reps"]} ({exercise["weight"]}kg)"
-            rep_labels.append(InlineKeyboardButton(rep_label, callback_data=f"rep{i}"))
-            rep_buttons.append(InlineKeyboardButton("Edit", callback_data=f"rep_edit{i}"))
-        keyboard.append(rep_labels)
-        keyboard.append(rep_buttons)
-    print(keyboard)
+    for (exercise, sets) in workouts.make_workout():
+        keyboard.append([InlineKeyboardButton(exercise.name, callback_data="bla")])
+        row = []
+        for i, s in enumerate(sets):
+            rep_label = f"{s.reps} ({exercise.weight}kg)"
+            row.append(InlineKeyboardButton(rep_label, callback_data=f"rep{i}"))
+        keyboard.append(row)
+        keyboard.append([
+            InlineKeyboardButton("⬆️ reps", callback_data="reps_up"),
+            InlineKeyboardButton("⬇️ reps", callback_data="reps_down"),
+            InlineKeyboardButton("⬆️ weight", callback_data="weight_up"),
+            InlineKeyboardButton("⬇️ weight", callback_data="weight_down"),
+        ])
+    from pprint import pprint
+    pprint(keyboard)
     return InlineKeyboardMarkup(keyboard)
 
 
