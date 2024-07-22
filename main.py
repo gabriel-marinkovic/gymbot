@@ -3,7 +3,7 @@ import logging
 import os
 import sys
 import tomllib
-from typing import Any, Dict, Optional, List, Callable
+from typing import Any, Dict, Optional, List, Callable, Tuple
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
@@ -33,6 +33,28 @@ def load_config() -> Dict[str, Any]:
         exit(-1)
 
 
+class ActionStore:
+    _actions: Dict[str, Callable[[], None]] = {}
+
+    def register(self, action: Callable[[], None]) -> str:
+        if len(self._actions) > 1000:
+            for key in list(self._actions.keys())[:100]:
+                del self._actions[key]
+        action_id = str(uuid.uuid4())
+        self._actions[action_id] = action
+        return action_id
+
+    def register_empty(self) -> str:
+        return self.register(lambda: None)
+
+    def run_action(self, action_id: str) -> None:
+        try:
+            action = self._actions[action_id]
+        except KeyError:
+            raise ValueError()
+        action()
+
+
 class Workout:
     id: str
     exercises: List[workouts.Exercise]
@@ -43,25 +65,31 @@ class Workout:
         self.exercises = [workouts.Exercise(ex) for ex in exercises]
         self._actions = {}
 
-    def generate_workout_markup(self) -> InlineKeyboardMarkup:
+    def generate_workout_markup(self, actions: ActionStore) -> InlineKeyboardMarkup:
         keyboard = []
         for exercise in self.exercises:
-            keyboard.append(
-                [InlineKeyboardButton(exercise.template.name, callback_data=self._register_action(lambda: None))]
-            )
+            keyboard.append([InlineKeyboardButton(exercise.template.name, callback_data=actions.register_empty())])
             row = []
             for i, s in enumerate(exercise.sets):
                 checkbox = "✅ " if s.completed else ""
                 label = f"{checkbox}{s.reps} ({s.weight}kg)"
-                row.append(InlineKeyboardButton(label, callback_data=self._register_action_toggle_set_completed(s)))
+                row.append(
+                    InlineKeyboardButton(label, callback_data=actions.register(lambda: self._toggle_set_completed(s)))
+                )
             keyboard.append(row)
             keyboard.append(
                 [
-                    InlineKeyboardButton("⬆️ reps", callback_data=self._register_action_change_reps(exercise, True)),
-                    InlineKeyboardButton("⬇️ reps", callback_data=self._register_action_change_reps(exercise, False)),
-                    InlineKeyboardButton("⬆️ weight", callback_data=self._register_action_change_weight(exercise, True)),
                     InlineKeyboardButton(
-                        "⬇️ weight", callback_data=self._register_action_change_weight(exercise, False)
+                        "⬆️ reps", callback_data=actions.register(lambda: self._change_reps(exercise, True))
+                    ),
+                    InlineKeyboardButton(
+                        "⬇️ reps", callback_data=actions.register(lambda: self._change_reps(exercise, False))
+                    ),
+                    InlineKeyboardButton(
+                        "⬆️ weight", callback_data=actions.register(lambda: self._change_weight(exercise, True))
+                    ),
+                    InlineKeyboardButton(
+                        "⬇️ weight", callback_data=actions.register(lambda: self._change_weight(exercise, False))
                     ),
                 ]
             )
@@ -73,29 +101,20 @@ class Workout:
             raise ValueError(f"Unknown action ID: {action_id}")
         action()
 
-    def _register_action_toggle_set_completed(self, s: workouts.WorkoutSet) -> str:
-        def callback():
-            s.completed = not s.completed
+    def _toggle_set_completed(self, s: workouts.WorkoutSet):
+        s.completed = not s.completed
 
-        return self._register_action(callback)
+    def _change_reps(self, exercise: workouts.Exercise, increase: bool):
+        delta = 1 if increase else -1
+        for s in exercise.sets:
+            if not s.completed:
+                s.reps = max(0, s.reps + delta)
 
-    def _register_action_change_reps(self, exercise: workouts.Exercise, increase: bool) -> str:
-        def callback():
-            delta = 1 if increase else -1
-            for s in exercise.sets:
-                if not s.completed:
-                    s.reps = max(0, s.reps + delta)
-
-        return self._register_action(callback)
-
-    def _register_action_change_weight(self, exercise: workouts.Exercise, increase: bool) -> str:
-        def callback():
-            delta = exercise.template.weight_delta if increase else -exercise.template.weight_delta
-            for s in exercise.sets:
-                if not s.completed:
-                    s.weight = round(s.weight + delta, 2)
-
-        return self._register_action(callback)
+    def _change_weight(self, exercise: workouts.Exercise, increase: bool):
+        delta = exercise.template.weight_delta if increase else -exercise.template.weight_delta
+        for s in exercise.sets:
+            if not s.completed:
+                s.weight = round(s.weight + delta, 2)
 
     def _register_action(self, callback: Callable[[], None]) -> str:
         action_id = str(uuid.uuid4())
@@ -154,4 +173,4 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(config["bot_auth_token"]).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button))
-    app.run_polling(poll_interval=0.5)
+    app.run_polling()
