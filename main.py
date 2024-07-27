@@ -3,7 +3,7 @@ import logging
 import os
 import sys
 import tomllib
-from typing import Any, Dict, Optional, List, Callable, Tuple
+from typing import Any, Dict, Optional, List, Callable
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
@@ -34,11 +34,14 @@ def load_config() -> Dict[str, Any]:
 
 
 class ActionStore:
-    _actions: Dict[str, Callable[[], None]] = {}
+    def __init__(self, limit: int = 10000):
+        self._actions: Dict[str, Callable[[], Any]] = {}
+        self._limit = limit
 
-    def register(self, action: Callable[[], None]) -> str:
-        if len(self._actions) > 1000:
-            for key in list(self._actions.keys())[:100]:
+    def register(self, action: Callable[[], Any]) -> str:
+        if len(self._actions) > self._limit:
+            to_remove = self._limit // 10
+            for key in list(self._actions.keys())[:to_remove]:
                 del self._actions[key]
         action_id = str(uuid.uuid4())
         self._actions[action_id] = action
@@ -47,23 +50,21 @@ class ActionStore:
     def register_empty(self) -> str:
         return self.register(lambda: None)
 
-    def run_action(self, action_id: str) -> None:
+    def run_action(self, action_id: str) -> Any:
         try:
             action = self._actions[action_id]
         except KeyError:
             raise ValueError()
-        action()
+        return action()
 
 
 class Workout:
     id: str
     exercises: List[workouts.Exercise]
-    _actions: Dict[str, Callable[[], None]]
 
     def __init__(self, exercises: List[workouts.ExerciseTemplate]):
         self.id = str(uuid.uuid4())
         self.exercises = [workouts.Exercise(ex) for ex in exercises]
-        self._actions = {}
 
     def generate_workout_markup(self, actions: ActionStore) -> InlineKeyboardMarkup:
         keyboard = []
@@ -74,98 +75,112 @@ class Workout:
                 checkbox = "✅ " if s.completed else ""
                 label = f"{checkbox}{s.reps} ({s.weight}kg)"
                 row.append(
-                    InlineKeyboardButton(label, callback_data=actions.register(lambda: self._toggle_set_completed(s)))
+                    InlineKeyboardButton(
+                        label, callback_data=self._register_call(actions, self._toggle_set_completed, s)
+                    )
                 )
             keyboard.append(row)
             keyboard.append(
                 [
                     InlineKeyboardButton(
-                        "⬆️ reps", callback_data=actions.register(lambda: self._change_reps(exercise, True))
+                        "⬆️ reps",
+                        callback_data=self._register_call(actions, self._change_reps, exercise, True),
                     ),
                     InlineKeyboardButton(
-                        "⬇️ reps", callback_data=actions.register(lambda: self._change_reps(exercise, False))
+                        "⬇️ reps",
+                        callback_data=self._register_call(actions, self._change_reps, exercise, False),
                     ),
                     InlineKeyboardButton(
-                        "⬆️ weight", callback_data=actions.register(lambda: self._change_weight(exercise, True))
+                        "⬆️ weight",
+                        callback_data=self._register_call(actions, self._change_weight, exercise, True),
                     ),
                     InlineKeyboardButton(
-                        "⬇️ weight", callback_data=actions.register(lambda: self._change_weight(exercise, False))
+                        "⬇️ weight",
+                        callback_data=self._register_call(actions, self._change_weight, exercise, False),
                     ),
                 ]
             )
         return InlineKeyboardMarkup(keyboard)
 
-    def run_action(self, action_id: str):
-        action = self._actions.get(action_id, None)
-        if action is None:
-            raise ValueError(f"Unknown action ID: {action_id}")
-        action()
-
-    def _toggle_set_completed(self, s: workouts.WorkoutSet):
+    def _toggle_set_completed(self, s: workouts.WorkoutSet) -> "Workout":
         s.completed = not s.completed
+        return self
 
-    def _change_reps(self, exercise: workouts.Exercise, increase: bool):
+    def _change_reps(self, exercise: workouts.Exercise, increase: bool) -> "Workout":
         delta = 1 if increase else -1
         for s in exercise.sets:
             if not s.completed:
                 s.reps = max(0, s.reps + delta)
+        return self
 
-    def _change_weight(self, exercise: workouts.Exercise, increase: bool):
+    def _change_weight(self, exercise: workouts.Exercise, increase: bool) -> "Workout":
         delta = exercise.template.weight_delta if increase else -exercise.template.weight_delta
         for s in exercise.sets:
             if not s.completed:
                 s.weight = round(s.weight + delta, 2)
+        return self
 
-    def _register_action(self, callback: Callable[[], None]) -> str:
-        action_id = str(uuid.uuid4())
-        assert action_id not in self._actions
-        self._actions[action_id] = callback
-        return action_id
+    def _register_call(self, action_store: ActionStore, method: Callable, *args: Any) -> str:
+        return action_store.register(lambda: method(*args))
 
 
-active_workout: Optional[Workout] = None
+def get_action_store(context: ContextTypes.DEFAULT_TYPE) -> ActionStore:
+    assert context.user_data is not None
+    if "action_store" not in context.user_data:
+        context.user_data["action_store"] = ActionStore()
+    return context.user_data["action_store"]
+
+
+def get_workout(context: ContextTypes.DEFAULT_TYPE) -> Optional[Workout]:
+    assert context.user_data is not None
+    if "active_workout" not in context.user_data:
+        context.user_data["active_workout"] = None
+    return context.user_data["active_workout"]
+
+
+def set_workout(context: ContextTypes.DEFAULT_TYPE, workout: Optional[Workout]):
+    assert context.user_data is not None
+    context.user_data["active_workout"] = workout
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global active_workout
-
     if not update.message:
         logging.warn("Got update without 'message':", update)
         return
 
     message = "Starting a new workout!\n"
-    if active_workout:
+    if get_workout(context):
         message += "<code>WARNING: Overwriting previous workout!</code>\n"
 
-    active_workout = Workout(workouts.make_workout_template())
-
+    workout = Workout(workouts.make_workout_template())
+    set_workout(context, workout)
     await update.message.reply_text(
-        message, parse_mode=ParseMode.HTML, reply_markup=active_workout.generate_workout_markup()
+        message, parse_mode=ParseMode.HTML, reply_markup=workout.generate_workout_markup(get_action_store(context))
     )
 
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    global active_workout
-    assert active_workout
+    actions = get_action_store(context)
 
     query = update.callback_query
-    assert query and query.data
-    action_id = query.data
-    assert isinstance(action_id, str)
-
+    assert query
     # NOTE: CallbackQueries need to be answered, even if no notification to the
     # user is needed Some clients may have trouble otherwise. See
     # https://core.telegram.org/bots/api#callbackquery
     await query.answer()
 
+    assert query.data
+    action_id = query.data
+    assert isinstance(action_id, str)
     try:
-        active_workout.run_action(action_id)
+        workout = actions.run_action(action_id)
+        assert isinstance(workout, Workout)
     except ValueError:
         logging.warn(f"Action ID not present in actions list: {action_id}")
-        assert update.message
-        await update.message.reply_text("The desired action can't be processed. Please refresh the UI!")
+        assert update.effective_chat
+        await update.effective_chat.send_message("The desired action can't be processed. Please refresh the UI!")
         return
-    await query.edit_message_reply_markup(active_workout.generate_workout_markup())
+    await query.edit_message_reply_markup(workout.generate_workout_markup(actions))
 
 
 if __name__ == "__main__":
