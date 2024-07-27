@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional, List, Callable
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler
+from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, CallbackQueryHandler, filters
 
 import workouts
 
@@ -143,22 +143,6 @@ def set_workout(context: ContextTypes.DEFAULT_TYPE, workout: Optional[Workout]):
     context.user_data["active_workout"] = workout
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message:
-        logging.warn("Got update without 'message':", update)
-        return
-
-    message = "Starting a new workout!\n"
-    if get_workout(context):
-        message += "<code>WARNING: Overwriting previous workout!</code>\n"
-
-    workout = Workout(workouts.make_workout_template())
-    set_workout(context, workout)
-    await update.message.reply_text(
-        message, parse_mode=ParseMode.HTML, reply_markup=workout.generate_workout_markup(get_action_store(context))
-    )
-
-
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     actions = get_action_store(context)
 
@@ -183,9 +167,44 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await query.edit_message_reply_markup(workout.generate_workout_markup(actions))
 
 
+
+async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    assert update.message
+
+    UNKNOWN_COMMAND_MESSAGE = "Unknown command! Type <code>help</code> for a list of available commands."
+
+    text = update.message.text if update.message.text else ""
+    command = text.strip().lower().split()
+    if not command:
+        await update.message.reply_text(UNKNOWN_COMMAND_MESSAGE)
+        return
+
+    name, args = command[0], command[1:]
+    if name == "start" or name == "workout":
+        message = "Starting a new workout!\n"
+        if get_workout(context):
+            message += "<code>WARNING: Overwriting previous workout!</code>\n"
+        workout = Workout(workouts.make_workout_template())
+        set_workout(context, workout)
+        await update.message.reply_text(
+            message, parse_mode=ParseMode.HTML, reply_markup=workout.generate_workout_markup(get_action_store(context))
+        )
+    elif name == "help":
+        message = "List of commands:"
+        message += "\n<code>start</code>, <code>workout</code>"
+        message += "\n    Start a new workout."
+        message += "\n<code>help</code>"
+        message += "\n    Show this message."
+        await update.message.reply_text(message, parse_mode=ParseMode.HTML)
+    else:
+        await update.message.reply_text(UNKNOWN_COMMAND_MESSAGE)
+
+
+
+
 if __name__ == "__main__":
     config = load_config()
     app = ApplicationBuilder().token(config["bot_auth_token"]).build()
-    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.ALL, on_message))
     app.add_handler(CallbackQueryHandler(button))
     app.run_polling()
