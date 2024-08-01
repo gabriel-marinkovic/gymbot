@@ -1,19 +1,20 @@
 import sqlite3
 import contextlib
+import json
 
 
 # SQLite `with` context for managing simple transactions.
 #
 # Usage:
-# with Transaction(con) as tx:  <-- `tx` is a cursor, implicit BEGIN
-#       tx.execute(...)
-#       tx.execute(...)
-#       some_fn(tx)
-#
-# --> Implicit COMMIT when scope is exited.
-#     If the scope exits due to an exception ROLLBACK instead.
-#
-# When leaving the scope COMMIT/ROLLBACK is always called,
+# ```
+#     with Transaction(con) as tx:  <-- `tx` is a cursor, implicit `BEGIN`
+#           tx.execute(...)
+#           tx.execute(...)
+#           some_fn(tx)
+#     # --> Implicit `COMMIT` when scope is exited.
+#     #     If the scope exits due to an exception `ROLLBACK` instead.
+# ```
+# When leaving the scope `COMMIT`/`ROLLBACK` is always executed,
 # so you shouldn't use explicit transaction control statements
 # inside of the scope; use a raw cursor instead.
 class Transaction:
@@ -45,32 +46,13 @@ INSERT OR IGNORE INTO database_metadata (key, value)
 VALUES ('version', '{_schema_version_latest}');
 
 
-CREATE TABLE IF NOT EXISTS file (
-    id              INTEGER NOT NULL PRIMARY KEY,
-    absolute_path   TEXT    NOT NULL UNIQUE,
-    last_indexed    INTEGER NOT NULL,
-    word_count      INTEGER NOT NULL DEFAULT 0,
-    exist           INTEGER NOT NULL
+CREATE TABLE IF NOT EXISTS user_data (
+    id          INTEGER NOT NULL PRIMARY KEY,
+    user_id     TEXT NOT NULL,
+    user_name   TEXT NOT NULL,
+    data        TEXT NOT NULL
 ) STRICT;
-CREATE UNIQUE INDEX IF NOT EXISTS unique_file_path ON file(absolute_path);
-
--- REAL columns can't have default values, so default is NULL.
--- This is fixed in a more recent version of SQLite.
-CREATE TABLE IF NOT EXISTS word (
-    id      INTEGER NOT NULL PRIMARY KEY,
-    text    TEXT    NOT NULL UNIQUE,
-    idf     REAL    DEFAULT NULL
-) STRICT;
-
-CREATE TABLE IF NOT EXISTS word_in_file (
-    file_id INTEGER NOT NULL,
-    word_id INTEGER NOT NULL,
-    count   INTEGER NOT NULL DEFAULT 0,
-
-    PRIMARY KEY (file_id, word_id),
-    FOREIGN KEY (file_id) REFERENCES file(id) ON DELETE CASCADE,
-    FOREIGN KEY (word_id) REFERENCES word(id)
-) STRICT, WITHOUT ROWID;
+CREATE UNIQUE INDEX IF NOT EXISTS unique_user_id ON user_data(user_id);
 """
 
 
@@ -118,7 +100,7 @@ def _set_sqlite_pragmas(con, *, is_in_memory):
     return con
 
 
-def _open_index_sqlite_connection(path_str):
+def open_sqlite_connection(path_str):
     def get_schema_set(tx):
         tx.execute("""
             SELECT  type, name, sql
@@ -130,17 +112,14 @@ def _open_index_sqlite_connection(path_str):
         is_in_memory = path_str.strip() == ":memory:"
         con = sqlite3.connect(path_str)
         _set_sqlite_pragmas(con, is_in_memory=is_in_memory)
-
         with contextlib.closing(con.cursor()) as cur:
             # Create the tables if they don't exist.
             # Also sets the schema version in database_metadata.
             cur.executescript(_schema_statements)
-
         # For extra schema verification,
         # alongside checking the `version` key from `database_metadata`,
         # create a temporary in-memory database with the correct schema
         # and check if the schemas match.
-
         with Transaction(con) as tx:
             rows = tx.execute("SELECT value FROM database_metadata WHERE key = 'version'")
             version = int(rows.fetchone()[0])
@@ -148,15 +127,12 @@ def _open_index_sqlite_connection(path_str):
                 raise sqlite3.OperationalError(
                     f"DB version is {version}, " f"but latest version is {_schema_version_latest}"
                 )
-
             schema_actual_db = get_schema_set(tx)
-
         tmp_con = sqlite3.connect(":memory:")
         _set_sqlite_pragmas(tmp_con, is_in_memory=True)
         with contextlib.closing(tmp_con.cursor()) as cur:
             cur.executescript(_schema_statements)
             schema_temp_db = get_schema_set(cur)
-
         if schema_temp_db != schema_actual_db:
             raise sqlite3.OperationalError("DB Schemas doesn't match.")
     except Exception as e:
@@ -164,3 +140,24 @@ def _open_index_sqlite_connection(path_str):
         raise e
 
     return con
+
+
+def load_json(connection, user_id):
+    with Transaction(connection) as tx:
+        row = tx.execute("SELECT data FROM user_data WHERE user_id = ?", (user_id,)).fetchone()
+        if not row:
+            return None
+        return json.loads(row[0])
+
+
+def store_json(connection, user_id, user_name, data):
+    print("------", data)
+    json_data = json.dumps(data)
+    with Transaction(connection) as tx:
+        tx.execute(
+            """
+            INSERT  INTO user_data (user_id, user_name, data) VALUES  (?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET user_name = ?, data = ?
+            """,
+            (user_id, user_name, json_data, user_name, json_data),
+        )

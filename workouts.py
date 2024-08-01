@@ -13,7 +13,6 @@ class ExerciseTemplate:
     reps: int
 
 
-
 @dataclasses.dataclass
 class WorkoutSet:
     id: str
@@ -22,18 +21,22 @@ class WorkoutSet:
     completed: bool
 
 
+@dataclasses.dataclass
 class Exercise:
     id: str
     template: ExerciseTemplate
     sets: List[WorkoutSet]
 
-    def __init__(self, template: ExerciseTemplate):
-        self.id = str(uuid.uuid4())
-        self.template = template
-        self.sets = [
-            WorkoutSet(id=str(uuid.uuid4()), weight=template.weight, reps=template.reps, completed=False)
-            for i in range(template.sets)
-        ]
+    @classmethod
+    def from_template(cls, template: ExerciseTemplate) -> "Exercise":
+        return Exercise(
+            id=str(uuid.uuid4()),
+            template=template,
+            sets=[
+                WorkoutSet(id=str(uuid.uuid4()), weight=template.weight, reps=template.reps, completed=False)
+                for i in range(template.sets)
+            ],
+        )
 
 
 _default_exercise_templates: List[ExerciseTemplate] = [
@@ -174,3 +177,29 @@ def make_workout_template() -> List[ExerciseTemplate]:
         "Weighted Sit Up",
     ]
     return [_name_to_template[name] for name in names]
+
+
+@dataclasses.dataclass
+class Workout:
+    id: str
+    exercises: List[Exercise]
+
+    @classmethod
+    def from_template(cls, template: List[ExerciseTemplate]) -> "Workout":
+        return Workout(id=str(uuid.uuid4()), exercises=[Exercise.from_template(ex) for ex in template])
+
+    def toggle_set_completed(self, s: WorkoutSet):
+        s.completed = not s.completed
+
+    def change_reps(self, exercise: Exercise, increase: bool):
+        delta = 1 if increase else -1
+        for s in exercise.sets:
+            if not s.completed:
+                s.reps = max(0, s.reps + delta)
+
+    def change_weight(self, exercise: Exercise, increase: bool):
+        delta = exercise.template.weight_delta if increase else -exercise.template.weight_delta
+        for s in exercise.sets:
+            if not s.completed:
+                s.weight = round(s.weight + delta, 2)
+

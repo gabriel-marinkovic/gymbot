@@ -1,23 +1,31 @@
 import enum
-import uuid
 import logging
 import os
 import sys
 import tomllib
-from typing import Any, Dict, Optional, List, cast, Union, Literal, Tuple
+from typing import Any, Dict, List, Literal, Tuple, Union, cast
 
+import dataclass_wizard
+import telegram
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, CallbackQueryHandler, filters
+from telegram.ext import ApplicationBuilder, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 
+import db
 import workouts
-
 
 logging.basicConfig(
     encoding="utf-8",
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
+
+
+# `dataclass_wizard` global configuration.
+class GlobalJSONMeta(dataclass_wizard.JSONWizard.Meta):
+    debug_enabled = True
+    key_transform_with_load = "SNAKE"
+    key_transform_with_dump = "SNAKE"
 
 
 def load_config() -> Dict[str, Any]:
@@ -34,71 +42,54 @@ def load_config() -> Dict[str, Any]:
         exit(-1)
 
 
-class Workout:
-    id: str
-    exercises: List[workouts.Exercise]
-
-    def __init__(self, exercises: List[workouts.ExerciseTemplate]):
-        self.id = str(uuid.uuid4())
-        self.exercises = [workouts.Exercise(ex) for ex in exercises]
-
-    def generate_workout_markup(self) -> InlineKeyboardMarkup:
-        keyboard = []
-        for exercise in self.exercises:
-            keyboard.append([InlineKeyboardButton(exercise.template.name, callback_data=(MessageKind.EMPTY,))])
-            row = []
-            for i, s in enumerate(exercise.sets):
-                checkbox = "✅ " if s.completed else ""
-                label = f"{checkbox}{s.reps} ({s.weight}kg)"
-                row.append(InlineKeyboardButton(label, callback_data=(MessageKind.SET_TOGGLE_COMPLETE, self, s)))
-            keyboard.append(row)
-            keyboard.append(
-                [
-                    InlineKeyboardButton(
-                        "⬆️ reps", callback_data=(MessageKind.EXERCISE_CHANGE_REPS, self, exercise, True)
-                    ),
-                    InlineKeyboardButton(
-                        "⬇️ reps",
-                        callback_data=(MessageKind.EXERCISE_CHANGE_REPS, self, exercise, False),
-                    ),
-                    InlineKeyboardButton(
-                        "⬆️ weight",
-                        callback_data=(MessageKind.EXERCISE_CHANGE_WEIGHT, self, exercise, True),
-                    ),
-                    InlineKeyboardButton(
-                        "⬇️ weight",
-                        callback_data=(MessageKind.EXERCISE_CHANGE_WEIGHT, self, exercise, False),
-                    ),
-                ]
-            )
-        return InlineKeyboardMarkup(keyboard)
-
-    def _toggle_set_completed(self, s: workouts.WorkoutSet):
-        s.completed = not s.completed
-
-    def _change_reps(self, exercise: workouts.Exercise, increase: bool):
-        delta = 1 if increase else -1
-        for s in exercise.sets:
-            if not s.completed:
-                s.reps = max(0, s.reps + delta)
-
-    def _change_weight(self, exercise: workouts.Exercise, increase: bool):
-        delta = exercise.template.weight_delta if increase else -exercise.template.weight_delta
-        for s in exercise.sets:
-            if not s.completed:
-                s.weight = round(s.weight + delta, 2)
+def render_workout(workout: workouts.Workout) -> InlineKeyboardMarkup:
+    keyboard = []
+    for exercise in workout.exercises:
+        keyboard.append([InlineKeyboardButton(exercise.template.name, callback_data=(MessageKind.EMPTY,))])
+        row = []
+        for i, s in enumerate(exercise.sets):
+            checkbox = "✅ " if s.completed else ""
+            label = f"{checkbox}{s.reps} ({s.weight}kg)"
+            row.append(InlineKeyboardButton(label, callback_data=(MessageKind.SET_TOGGLE_COMPLETE, workout, s)))
+        keyboard.append(row)
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    "⬆️ reps", callback_data=(MessageKind.EXERCISE_CHANGE_REPS, workout, exercise, True)
+                ),
+                InlineKeyboardButton(
+                    "⬇️ reps",
+                    callback_data=(MessageKind.EXERCISE_CHANGE_REPS, workout, exercise, False),
+                ),
+                InlineKeyboardButton(
+                    "⬆️ weight",
+                    callback_data=(MessageKind.EXERCISE_CHANGE_WEIGHT, workout, exercise, True),
+                ),
+                InlineKeyboardButton(
+                    "⬇️ weight",
+                    callback_data=(MessageKind.EXERCISE_CHANGE_WEIGHT, workout, exercise, False),
+                ),
+            ]
+        )
+    return InlineKeyboardMarkup(keyboard)
 
 
-def get_workout(context: ContextTypes.DEFAULT_TYPE) -> Optional[Workout]:
+def get_workouts(user: telegram.User, context: ContextTypes.DEFAULT_TYPE) -> List[workouts.Workout]:
     assert context.user_data is not None
     if "active_workout" not in context.user_data:
-        context.user_data["active_workout"] = None
+        raw = db.load_json(db_connection, str(user.id))
+        if not raw:
+            raw = []
+        context.user_data["active_workout"] = dataclass_wizard.fromlist(workouts.Workout, raw)
     return context.user_data["active_workout"]
 
 
-def set_workout(context: ContextTypes.DEFAULT_TYPE, workout: Optional[Workout]):
+def persist_workouts(user: telegram.User, context: ContextTypes.DEFAULT_TYPE):
     assert context.user_data is not None
-    context.user_data["active_workout"] = workout
+    workouts = get_workouts(user, context)
+    context.user_data["active_workout"] = workouts
+    raw = [dataclass_wizard.asdict(x) for x in workouts]
+    db.store_json(db_connection, user.id, user.full_name, raw)
 
 
 class MessageKind(enum.Enum):
@@ -112,40 +103,44 @@ class MessageKind(enum.Enum):
 
 message_types = Union[
     Tuple[Literal[MessageKind.WORKOUT_START]],
-    Tuple[Literal[MessageKind.WORKOUT_RENDER], Workout],
-    Tuple[Literal[MessageKind.SET_TOGGLE_COMPLETE], Workout, workouts.WorkoutSet],
-    Tuple[Literal[MessageKind.EXERCISE_CHANGE_REPS], Workout, workouts.Exercise, bool],
-    Tuple[Literal[MessageKind.EXERCISE_CHANGE_WEIGHT], Workout, workouts.Exercise, bool],
+    Tuple[Literal[MessageKind.WORKOUT_RENDER], workouts.Workout],
+    Tuple[Literal[MessageKind.SET_TOGGLE_COMPLETE], workouts.Workout, workouts.WorkoutSet],
+    Tuple[Literal[MessageKind.EXERCISE_CHANGE_REPS], workouts.Workout, workouts.Exercise, bool],
+    Tuple[Literal[MessageKind.EXERCISE_CHANGE_WEIGHT], workouts.Workout, workouts.Exercise, bool],
 ]
 
 
 async def handle_message(data: message_types, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     assert update.effective_chat
+    assert update.effective_user
 
     if data[0] == MessageKind.WORKOUT_START:
-        workout = Workout(workouts.make_workout_template())
-        set_workout(context, workout)
-        await update.effective_chat.send_message(
-            "Starting a new workout!", reply_markup=workout.generate_workout_markup()
-        )
+        existing_workouts = get_workouts(update.effective_user, context)
+        workout = workouts.Workout.from_template(workouts.make_workout_template())
+        existing_workouts.append(workout)
+        persist_workouts(update.effective_user, context)
+        await update.effective_chat.send_message("Starting a new workout!", reply_markup=render_workout(workout))
     elif data[0] == MessageKind.WORKOUT_RENDER:
         (workout,) = data[1:]
-        await update.effective_chat.send_message("Resuming workout!", reply_markup=workout.generate_workout_markup())
+        await update.effective_chat.send_message("Resuming workout!", reply_markup=render_workout(workout))
     elif data[0] == MessageKind.SET_TOGGLE_COMPLETE:
         workout, s = data[1:]
         assert update.callback_query
-        workout._toggle_set_completed(s)
-        await update.callback_query.edit_message_reply_markup(workout.generate_workout_markup())
+        workout.toggle_set_completed(s)
+        persist_workouts(update.effective_user, context)
+        await update.callback_query.edit_message_reply_markup(render_workout(workout))
     elif data[0] == MessageKind.EXERCISE_CHANGE_REPS:
         workout, exercise, increase = data[1:]
         assert update.callback_query
-        workout._change_reps(exercise, increase)
-        await update.callback_query.edit_message_reply_markup(workout.generate_workout_markup())
+        workout.change_reps(exercise, increase)
+        persist_workouts(update.effective_user, context)
+        await update.callback_query.edit_message_reply_markup(render_workout(workout))
     elif data[0] == MessageKind.EXERCISE_CHANGE_WEIGHT:
         assert update.callback_query
         workout, exercise, increase = data[1:]
-        workout._change_weight(exercise, increase)
-        await update.callback_query.edit_message_reply_markup(workout.generate_workout_markup())
+        workout.change_weight(exercise, increase)
+        persist_workouts(update.effective_user, context)
+        await update.callback_query.edit_message_reply_markup(render_workout(workout))
 
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -169,31 +164,34 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    assert update.message
+    assert update.effective_message
+    assert update.effective_user
 
     UNKNOWN_COMMAND_MESSAGE = "Unknown command! Type <code>help</code> for a list of available commands."
 
-    text = update.message.text if update.message.text else ""
+    text = update.effective_message.text if update.effective_message.text else ""
     command = text.strip().lower().split()
     if not command:
-        await update.message.reply_text(UNKNOWN_COMMAND_MESSAGE)
+        await update.effective_message.reply_text(UNKNOWN_COMMAND_MESSAGE)
         return
 
     name, _ = command[0], command[1:]
     if name == "start" or name == "workout":
-        existing_workout = get_workout(context)
-        if not existing_workout:
+        existing_workouts = get_workouts(update.effective_user, context)
+        if not existing_workouts:
             await handle_message((MessageKind.WORKOUT_START,), update, context)
         else:
             kb = InlineKeyboardMarkup(
                 [
                     [
-                        InlineKeyboardButton("Resume", callback_data=(MessageKind.WORKOUT_RENDER, existing_workout)),
+                        InlineKeyboardButton(
+                            "Resume", callback_data=(MessageKind.WORKOUT_RENDER, existing_workouts[-1])
+                        ),
                         InlineKeyboardButton("Start New", callback_data=(MessageKind.WORKOUT_START,)),
                     ]
                 ],
             )
-            await update.message.reply_text(
+            await update.effective_message.reply_text(
                 "There is already a workout in progress. Do you want to resume it?", reply_markup=kb
             )
 
@@ -203,13 +201,19 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message += "\n    Start a new workout."
         message += "\n<code>help</code>"
         message += "\n    Show this message."
-        await update.message.reply_text(message, parse_mode=ParseMode.HTML)
+        await update.effective_message.reply_text(message, parse_mode=ParseMode.HTML)
     else:
-        await update.message.reply_text(UNKNOWN_COMMAND_MESSAGE)
+        await update.effective_message.reply_text(UNKNOWN_COMMAND_MESSAGE)
 
 
 if __name__ == "__main__":
     config = load_config()
+
+    if "db_path" not in config:
+        logging.error("Missing property 'db_path' in CONFIG.")
+        exit(1)
+    db_connection = db.open_sqlite_connection(config["db_path"])
+
     app = ApplicationBuilder().token(config["bot_auth_token"]).arbitrary_callback_data(True).build()
     app.add_handler(MessageHandler(filters.ALL, on_message))
     app.add_handler(CallbackQueryHandler(button))
