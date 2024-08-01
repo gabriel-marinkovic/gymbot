@@ -116,13 +116,15 @@ async def handle_message(data: message_types, update: Update, context: ContextTy
 
     if data[0] == MessageKind.WORKOUT_START:
         existing_workouts = get_workouts(update.effective_user, context)
-        workout = workouts.Workout.from_template(workouts.make_workout_template())
+        workout = workouts.Workout.make_next(existing_workouts, workouts.long_cycle_workout_templates)
         existing_workouts.append(workout)
         persist_workouts(update.effective_user, context)
-        await update.effective_chat.send_message("Starting a new workout!", reply_markup=render_workout(workout))
+        msg = f"Starting a new workout:\n<code>{workout.template_name}</code>"
+        await update.effective_chat.send_message(msg, reply_markup=render_workout(workout), parse_mode=ParseMode.HTML)
     elif data[0] == MessageKind.WORKOUT_RENDER:
         (workout,) = data[1:]
-        await update.effective_chat.send_message("Resuming workout!", reply_markup=render_workout(workout))
+        msg = f"Resuming workout:\n<code>{workout.template_name}</code>"
+        await update.effective_chat.send_message(msg, reply_markup=render_workout(workout), parse_mode=ParseMode.HTML)
     elif data[0] == MessageKind.SET_TOGGLE_COMPLETE:
         workout, s = data[1:]
         assert update.callback_query
