@@ -1,3 +1,4 @@
+2024/08/01
 - generate changelog when creating a new workout, so that the user can see what changed from the previous workout
 - add timestamps for starting and completing a workout
 - add a "complete" button
