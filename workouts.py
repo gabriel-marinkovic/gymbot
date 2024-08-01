@@ -233,7 +233,32 @@ class Workout:
                 if templates[i].name == name:
                     next_workout_idx = (i + 1) % len(templates)
                     break
-        workout = cls.from_template(templates[next_workout_idx])
+        template = templates[next_workout_idx]
+
+        previous_with_template = None
+        for w in reversed(previous_workouts):
+            if w.template_name == template.name:
+                previous_with_template = w
+                break
+        if not previous_with_template:
+            previous_with_template = cls.from_template(template)
+
+        workout = cls.from_template(template)
+        for exercise in workout.exercises:
+            prev_exercise = None
+            for prev in previous_with_template.exercises:
+                if prev.template.name == exercise.template.name:
+                    prev_exercise = prev
+                    break
+            if not prev_exercise:
+                continue
+            all_completed = all(s.completed for s in prev_exercise.sets)
+            any_completed = any(s.completed for s in prev_exercise.sets)
+            if all_completed:
+                workout.change_weight(exercise, True)
+            elif any_completed:
+                workout.change_weight(exercise, False)
+                workout.change_reps(exercise, False)
         return workout
 
     def toggle_set_completed(self, s: WorkoutSet):
