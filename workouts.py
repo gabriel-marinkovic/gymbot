@@ -1,5 +1,5 @@
 import dataclasses
-from typing import List, Dict
+from typing import List, Dict, Literal, Tuple, Union
 import uuid
 
 
@@ -209,6 +209,15 @@ long_cycle_workout_templates: List[WorkoutTemplate] = [
     ),
 ]
 
+@dataclasses.dataclass
+class ExerciseDiff:
+    exercise_name: str
+    sets_completed: Union[Literal["none"], Literal["some"], Literal["all"]]
+    weight_before: float
+    weight_after: float
+    reps_before: int
+    reps_after: int
+
 
 @dataclasses.dataclass
 class Workout:
@@ -225,7 +234,7 @@ class Workout:
         )
 
     @classmethod
-    def make_next(cls, previous_workouts: List["Workout"], templates: List[WorkoutTemplate]) -> "Workout":
+    def make_next(cls, previous_workouts: List["Workout"], templates: List[WorkoutTemplate]) -> Tuple["Workout", List[ExerciseDiff]]:
         next_workout_idx = 0
         if previous_workouts:
             name = previous_workouts[-1].template_name
@@ -243,6 +252,7 @@ class Workout:
         if not previous_with_template:
             previous_with_template = cls.from_template(template)
 
+        diffs = []
         workout = cls.from_template(template)
         for exercise in workout.exercises:
             prev_exercise = None
@@ -252,6 +262,11 @@ class Workout:
                     break
             if not prev_exercise:
                 continue
+            base_weight = min(s.weight for s in prev_exercise.sets)
+            base_reps = max(s.reps for s in prev_exercise.sets)
+            for s in exercise.sets:
+                s.weight = base_weight
+                s.reps = base_reps
             all_completed = all(s.completed for s in prev_exercise.sets)
             any_completed = any(s.completed for s in prev_exercise.sets)
             if all_completed:
@@ -259,7 +274,15 @@ class Workout:
             elif any_completed:
                 workout.change_weight(exercise, False)
                 workout.change_reps(exercise, False)
-        return workout
+            diffs.append(ExerciseDiff(
+                exercise.template.name,
+                sets_completed=("all" if all_completed else "some" if any_completed else "none"),
+                weight_before=base_weight,
+                weight_after=exercise.sets[0].weight,
+                reps_before=base_reps,
+                reps_after=exercise.sets[0].reps,
+            ))
+        return workout, diffs
 
     def toggle_set_completed(self, s: WorkoutSet):
         s.completed = not s.completed

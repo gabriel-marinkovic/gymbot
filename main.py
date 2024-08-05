@@ -74,6 +74,21 @@ def render_workout(workout: workouts.Workout) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 
+def render_workout_diff(diffs: List[workouts.ExerciseDiff]) -> str:
+    rendered = ""
+    for diff in diffs:
+        if diff.sets_completed == "none":
+            continue
+        if rendered:
+            rendered += "\n"
+        rendered += f"<code>{diff.exercise_name}</code>:"
+        if diff.weight_before != diff.weight_after:
+            rendered += f"\n    Weight changed from {diff.weight_before}kg to {diff.weight_after}kg ({diff.sets_completed} previous sets completed)."
+        if diff.reps_before != diff.reps_after:
+            rendered += f"\n    Weight changed from {diff.reps_before}kg to {diff.reps_after}kg ({diff.sets_completed} previous sets completed)."
+    return rendered
+
+
 def get_workouts(user: telegram.User, context: ContextTypes.DEFAULT_TYPE) -> List[workouts.Workout]:
     assert context.user_data is not None
     if "active_workout" not in context.user_data:
@@ -116,10 +131,10 @@ async def handle_message(data: message_types, update: Update, context: ContextTy
 
     if data[0] == MessageKind.WORKOUT_START:
         existing_workouts = get_workouts(update.effective_user, context)
-        workout = workouts.Workout.make_next(existing_workouts, workouts.long_cycle_workout_templates)
+        workout, diff = workouts.Workout.make_next(existing_workouts, workouts.long_cycle_workout_templates)
         existing_workouts.append(workout)
         persist_workouts(update.effective_user, context)
-        msg = f"Starting a new workout:\n<code>{workout.template_name}</code>"
+        msg = f"Starting a new workout:\n<code>{workout.template_name}</code>\n\n{render_workout_diff(diff)}"
         await update.effective_chat.send_message(msg, reply_markup=render_workout(workout), parse_mode=ParseMode.HTML)
     elif data[0] == MessageKind.WORKOUT_RENDER:
         (workout,) = data[1:]
