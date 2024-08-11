@@ -32,10 +32,13 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=bind,source=requirements.txt,target=requirements.txt \
     python -m pip install -r requirements.txt
 
+# Create data directory.
+RUN mkdir -p /app/data && chown -R appuser:appuser /app/data
+
 # Switch to the non-privileged user to run the application.
 USER appuser
 
 COPY . .
 
 ENV CONFIG=config.toml
-CMD python3 -m main
+CMD ["python3", "-m", "main"]
